@@ -1,0 +1,61 @@
+
+taxa <- readTaxonData("data/taxa.tsv")
+#taxa
+morpho <- readDiscreteCharacterData("data/Mosasaur_data.nex")
+moves = VectorMoves()
+monitors = VectorMonitors()
+
+n_taxa <- taxa.size()
+num_branches <- 2 * n_taxa - 2
+source("mosasaur_scripts/model_UCLN.Rev")
+source("mosasaur_scripts/model_FBD.Rev")
+
+character_indicator ~ dnCategorical(simplex(1,1,1,1,1, 1));
+character_indicator.setValue(2);
+moves.append( mvRandomGeometricWalk(character_indicator, weight=10.0, tune=FALSE) );
+
+
+alpha_morpho ~ dnUniform( 0, 1E6 )
+rates_morpho := fnDiscretizeGamma( alpha_morpho, alpha_morpho, 4 )
+#Moves on the parameters of the Gamma distribution.
+moves.append(mvScale(alpha_morpho, lambda=1, weight=2.0))
+
+rates_morpho_all_part := fnDiscretizeGamma( alpha_morpho, alpha_morpho, 4 )
+rates_morpho_core := fnDiscretizeGamma( alpha_morpho, alpha_morpho, 4 )
+rates_morpho_cranium := fnDiscretizeGamma( alpha_morpho, alpha_morpho, 4 )
+rates_morpho_limb := fnDiscretizeGamma( alpha_morpho, alpha_morpho, 4 )
+rates_morpho_tooth := fnDiscretizeGamma( alpha_morpho, alpha_morpho, 4 )
+
+char_vec := v(rates_morpho, rates_morpho_core, rates_morpho_cranium, rates_morpho_limb, rates_morpho_tooth, rates_morpho_all_part );
+site_rates := char_vec[character_indicator]
+
+source("mosasaur_scripts/model_Mk.Rev")
+source("mosasaur_scripts/model_Mk_Core.Rev")
+source("mosasaur_scripts/model_Mk_Cranium.Rev")
+source("mosasaur_scripts/model_Mk_Limb.Rev")
+source("mosasaur_scripts/model_Mk_Tooth.Rev")
+
+     mymodel = model(fbd_tree)
+
+
+
+     monitors.append(mnModel(filename="output/all_part.log", printgen=100))
+
+
+
+     monitors.append(mnFile(filename="output/all_part.trees", printgen=100,  fbd_tree))
+
+
+
+     monitors.append(mnScreen(printgen=100, character_indicator))
+
+
+
+     mymcmc = mcmc(mymodel, monitors, moves, nrun=2)
+
+
+     mymcmc.run(generations=100000000)
+
+
+
+     q()

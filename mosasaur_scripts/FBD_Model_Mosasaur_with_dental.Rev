@@ -1,0 +1,167 @@
+taxa <- readTaxonData("Mosasaur_time_intervals.tsv")
+morpho <- readDiscreteCharacterData("mosasaur_with_dental.nex")
+morpho
+n_taxa <- taxa.size()
+num_branches <- 2 * n_taxa - 2
+
+moves = VectorMoves()
+monitors = VectorMonitors()
+
+
+
+#This is a median speciation rate from a previous study
+speciation_rate ~ dnExponential(10)
+#speciation_rate := abs(speciation_rate)
+
+moves.append(mvScale(speciation_rate, lambda=0.01, weight=5));
+moves.append(mvScale(speciation_rate, lambda=0.10, weight=3));
+moves.append(mvScale(speciation_rate, lambda=1.00, weight=1));
+
+
+
+extinction_rate ~ dnExponential(10)
+
+moves.append(mvScale(extinction_rate, lambda=0.01, weight=5));
+moves.append(mvScale(extinction_rate, lambda=0.10, weight=3));
+moves.append(mvScale(extinction_rate, lambda=1.00, weight=1));
+
+
+diversification := speciation_rate - extinction_rate
+
+
+rho <- 0
+
+
+psi ~ dnExponential(10)
+moves.append(mvScale(psi, lambda=0.01, weight=1))
+moves.append(mvScale(psi, lambda=0.1,  weight=1))
+moves.append(mvScale(psi, lambda=1,    weight=1))
+
+
+
+
+
+origin_time ~ dnUnif(90, 150);
+moves.append(mvSlide(origin_time, delta=0.01, weight=5.0))
+moves.append(mvSlide(origin_time, delta=0.1,  weight=5.0))
+moves.append(mvSlide(origin_time, delta=1,    weight=5.0))
+origin_time
+
+
+fbd_dist = dnFBDP(origin=origin_time, lambda=speciation_rate, mu=extinction_rate, psi=psi, rho=rho, taxa=taxa)
+fbd_dist
+ingroup = clade("Pontosaurus_kornhuberi","Aigialosaurus_dalmaticus","Aigialosaurus_bucchichi","Komensaurus_carrolli","Halisaurus_platyspondylus","Halisaurus_sternbergi","Dallasaurus_turneri","Clidastes_liodontus","Clidastes_moorevillensis","Clidastes_propython","Prognathodon_overtoni","Prognathodon_rapax","Prognathodon_solvayi","Prognathodon_currii","Prognathodon_waiparaensis","Prognathodon_saturator","Globidens_alabamaensis","Globidens_dakotensis","Mosasaurus_conodon","Mosasaurus_hoffmannii","Mosasaurus_missouriensis","Plesiotylosaurus_crassidens","Plotosaurus_bennisoni","Tylosaurus_nepaeolicus","Tylosaurus_bernardi","Taniwhasaurus_oweni","Taniwhasaurus_antarcticus","Tylosaurus_proriger","Yaguarasaurus_columbianus","Eremiasaurus_heterodontus","Prognathodon_kianda","Russellosaurus_coheni","Romeosaurus_fumanensis","Ectenosaurus_clidastoides","Plioplatecarpus","Platecarpus_planifrons","Platecarpus_tympaniticus","Latoplatecarpus_willistoni","Selmasaurus_johnsoni","Angolasaurus_bocagei","Tethysaurus_nopcsai","Pannoniasaurus_osii")
+constraints = v(ingroup)
+
+
+
+
+
+fbd_tree ~ dnConstrainedTopology(fbd_dist, constraints=constraints)
+fbd_tree
+
+
+
+moves.append(mvFNPR(fbd_tree, weight=15.0))
+moves.append(mvCollapseExpandFossilBranch(fbd_tree, origin_time, weight=6.0))
+moves.append(mvNodeTimeSlideUniform(fbd_tree, weight=40.0))
+moves.append(mvRootTimeSlideUniform(fbd_tree, origin_time, weight=5.0))
+
+
+intervals = readDataDelimitedFile(file="Mosasaur_time_intervals.tsv", header=true)
+for(i in 1:intervals.size())
+{
+  taxon[i] = intervals[i][1]
+  a_i = intervals[i][2]
+  b_i = intervals[i][3]
+  t[i] := tmrca(fbd_tree, clade(taxon[i]))
+
+  fossil[i] <- a_i
+  fossil[i] ~ dnSoftBoundUniformNormal(t[i] - b_i, t[i] - a_i, sd = 2, p = 0.025)
+}
+
+
+
+moves.append(mvFossilTimeSlideUniform(fbd_tree, origin_time, weight=5.0))
+
+
+
+num_samp_anc := fbd_tree.numSampledAncestors()
+
+
+
+ucln_mean ~ dnExponential(2.0)
+# sigma
+ucln_sigma ~ dnExponential(3.0)
+# Set a deterministic node on sigma^2
+ucln_var := ucln_sigma * ucln_sigma
+ucln_mu := ln(ucln_mean) - (ucln_var * 0.5)
+moves.append(mvScale(ucln_mean, lambda=1.0, tune=true, weight=4.0))
+moves.append(mvScale(ucln_sigma, lambda=0.5, tune=true, weight=4.0))
+
+for (i in 1:num_branches){
+  branch_rate_var[i] ~ dnLognormal(ucln_mu, ucln_sigma)
+  moves.append(mvScale(branch_rate_var[i], lambda=1, tune=true, weight=2.0))
+}
+moves.append(mvVectorScale(branch_rate_var,lambda=1.0,tune=true,weight=2.0))
+moves.append(mvVectorSingleElementScale(branch_rate_var,lambda=30.0,tune=true,weight=1.0))
+
+
+
+alpha_morpho ~ dnUniform( 0, 1E6 )
+rates_morpho := fnDiscretizeGamma( alpha_morpho, alpha_morpho, 4 )
+#Moves on the parameters of the Gamma distribution.
+moves.append(mvScale(alpha_morpho, lambda=1, weight=2.0))
+
+n_max_states <- 6
+idx = 1
+morpho_bystate[1] <- morpho
+for (i in 2:n_max_states) {
+  morpho_bystate[i] <- morpho
+  morpho_bystate[i].setNumStatesPartition(i)
+  nc = morpho_bystate[i].nchar()
+  if (nc > 0) {
+    q[idx] <- fnJC(i)
+    m_morph[idx] ~ dnPhyloCTMC( tree=fbd_tree,
+                                Q=q[idx],
+                                nSites=nc,
+                                siteRates=rates_morpho,
+                                branchRates = branch_rate_var,
+                                type="Standard")
+
+    m_morph[idx].clamp(morpho_bystate[i])
+
+    idx = idx + 1
+    idx
+  }
+}
+
+
+
+mymodel = model(fbd_tree)
+
+
+
+monitors.append(mnModel(filename="output/mosasaur_dated_with_dental.log", printgen=10))
+
+
+monitors.append(mnFile(filename="output/mosasaur_dated_with_dental.trees", printgen=10, fbd_tree))
+
+
+
+
+monitors.append(mnScreen(printgen=10, num_samp_anc, origin_time))
+
+mymcmc = mcmc(mymodel, monitors, moves)
+
+mymcmc.run(generations=1000000)
+
+
+
+
+
+
+trace = readTreeTrace("output/mosasaur_dated_with_dental.trees")
+mccTree(trace, file = "output/mosasaur_mccTree_with_dental.tre")
+conTree(trace, file = "output/mosasaur_conTree_with_dental.tre")
+
